@@ -17,6 +17,12 @@ class WhisperResult(TypedDict):
     language: Optional[str]
 
 
+def format_segment_text(segment: WhisperSegment) -> str:
+    text = segment["text"].strip()
+    speaker = segment.get("speaker")
+    return f"Speaker {speaker}: {text}" if speaker and text else text
+
+
 class TranscribeOptions(TypedDict):
     initial_prompt: str
     cleanup: bool
