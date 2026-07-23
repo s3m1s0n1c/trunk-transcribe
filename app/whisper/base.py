@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Optional, TypedDict
+from typing import Any, NotRequired, Optional, TypedDict
 
 from app.whisper.config import TranscriptCleanupConfig
 
@@ -8,6 +8,7 @@ class WhisperSegment(TypedDict):
     start: float
     end: float
     text: str
+    speaker: NotRequired[str]
 
 
 class WhisperResult(TypedDict):
