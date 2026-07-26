@@ -76,9 +76,11 @@ def test_diarization_request_includes_known_speakers():
     module = load_module()
     with tempfile.TemporaryDirectory() as temp_dir:
         directory = Path(temp_dir)
-        create_wav(directory / "Rusty-Bucket.wav", 3.0)
+        known_directory = directory / "known-speakers"
+        known_directory.mkdir()
+        create_wav(known_directory / "Rusty-Bucket.wav", 8.0)
         input_audio = directory / "input.wav"
-        create_wav(input_audio, 1.0)
+        create_wav(input_audio, 5.0)
 
         response = Mock()
         response.model_dump.return_value = {
@@ -86,7 +88,7 @@ def test_diarization_request_includes_known_speakers():
             "segments": [
                 {
                     "start": 0.0,
-                    "end": 1.0,
+                    "end": 5.0,
                     "text": "hello",
                     "speaker": "Rusty Bucket",
                 }
@@ -97,7 +99,7 @@ def test_diarization_request_includes_known_speakers():
 
         with patch.dict(
             os.environ,
-            {"OPENAI_KNOWN_SPEAKERS_DIR": temp_dir},
+            {"OPENAI_KNOWN_SPEAKERS_DIR": str(known_directory)},
             clear=False,
         ):
             implementation = module.OpenAIApi(
@@ -116,11 +118,69 @@ def test_diarization_request_includes_known_speakers():
     assert result["segments"][0]["speaker"] == "Rusty Bucket"
 
 
+def test_short_known_speaker_falls_back_to_generic_label():
+    module = load_module()
+    result = {
+        "text": "short known speaker and longer unknown speaker",
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 1.5,
+                "text": "short known speaker",
+                "speaker": "Rusty Bucket",
+            },
+            {
+                "start": 2.0,
+                "end": 7.0,
+                "text": "longer unknown speaker",
+                "speaker": "A",
+            },
+        ],
+        "language": "en",
+    }
+
+    filtered = module.OpenAIApi.apply_known_speaker_minimum(
+        result,
+        ["Rusty Bucket"],
+    )
+
+    assert filtered["segments"][0]["speaker"] == "A"
+    assert filtered["segments"][1]["speaker"] == "B"
+
+
+def test_known_speaker_duration_is_summed_across_segments():
+    module = load_module()
+    result = {
+        "text": "one two",
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 2.0,
+                "text": "one",
+                "speaker": "Sonic",
+            },
+            {
+                "start": 3.0,
+                "end": 5.1,
+                "text": "two",
+                "speaker": "Sonic",
+            },
+        ],
+        "language": "en",
+    }
+
+    filtered = module.OpenAIApi.apply_known_speaker_minimum(result, ["Sonic"])
+
+    assert all(segment["speaker"] == "Sonic" for segment in filtered["segments"])
+
+
 def test_non_diarization_model_does_not_load_known_speakers():
     module = load_module()
     with tempfile.TemporaryDirectory() as temp_dir:
         directory = Path(temp_dir)
-        create_wav(directory / "Rusty-Bucket.wav", 3.0)
+        known_directory = directory / "known-speakers"
+        known_directory.mkdir()
+        create_wav(known_directory / "Rusty-Bucket.wav", 3.0)
         input_audio = directory / "input.wav"
         create_wav(input_audio, 1.0)
 
@@ -131,7 +191,7 @@ def test_non_diarization_model_does_not_load_known_speakers():
 
         with patch.dict(
             os.environ,
-            {"OPENAI_KNOWN_SPEAKERS_DIR": temp_dir},
+            {"OPENAI_KNOWN_SPEAKERS_DIR": str(known_directory)},
             clear=False,
         ):
             implementation = module.OpenAIApi("test-key", "gpt-4o-transcribe")
