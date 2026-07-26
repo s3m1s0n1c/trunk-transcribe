@@ -1,9 +1,18 @@
+import base64
+import logging
 import os
+import wave
+from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
 from .base import BaseWhisper, TranscribeOptions, WhisperResult, WhisperSegment
+
+
+KNOWN_SPEAKER_MIN_SECONDS = 2.0
+KNOWN_SPEAKER_MAX_SECONDS = 10.0
+KNOWN_SPEAKER_LIMIT = 4
 
 
 class OpenAIApi(BaseWhisper):
@@ -67,6 +76,83 @@ class OpenAIApi(BaseWhisper):
             "language": response_data.get("language") or language,
         }
 
+    @staticmethod
+    def known_speakers() -> tuple[list[str], list[str]]:
+        directory = Path(
+            os.getenv(
+                "OPENAI_KNOWN_SPEAKERS_DIR",
+                "config/known-speakers",
+            )
+        )
+        if not directory.is_dir():
+            return [], []
+
+        names: list[str] = []
+        references: list[str] = []
+        wav_files = sorted(
+            (
+                path
+                for path in directory.iterdir()
+                if path.is_file() and path.suffix.lower() == ".wav"
+            ),
+            key=lambda path: path.name.casefold(),
+        )
+
+        for path in wav_files:
+            if len(names) == KNOWN_SPEAKER_LIMIT:
+                logging.warning(
+                    "Ignoring known speaker reference %s: OpenAI accepts at most %d",
+                    path,
+                    KNOWN_SPEAKER_LIMIT,
+                )
+                continue
+
+            name = " ".join(path.stem.replace("-", " ").replace("_", " ").split())
+            if not name:
+                logging.warning(
+                    "Ignoring known speaker reference with an empty name: %s",
+                    path,
+                )
+                continue
+
+            try:
+                with wave.open(str(path), "rb") as wav_file:
+                    frame_rate = wav_file.getframerate()
+                    duration = (
+                        wav_file.getnframes() / frame_rate if frame_rate else 0.0
+                    )
+            except (OSError, wave.Error) as exc:
+                logging.warning(
+                    "Ignoring invalid known speaker WAV %s: %s",
+                    path,
+                    exc,
+                )
+                continue
+
+            if not KNOWN_SPEAKER_MIN_SECONDS <= duration <= KNOWN_SPEAKER_MAX_SECONDS:
+                logging.warning(
+                    "Ignoring known speaker reference %s: %.2f seconds is outside "
+                    "OpenAI's 2-10 second range",
+                    path,
+                    duration,
+                )
+                continue
+
+            try:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError as exc:
+                logging.warning(
+                    "Unable to read known speaker reference %s: %s",
+                    path,
+                    exc,
+                )
+                continue
+
+            names.append(name)
+            references.append(f"data:audio/wav;base64,{encoded}")
+
+        return names, references
+
     def transcribe(
         self,
         audio: str,
@@ -86,6 +172,12 @@ class OpenAIApi(BaseWhisper):
         }
         if self.is_diarization_model:
             request["chunking_strategy"] = "auto"
+            names, references = self.known_speakers()
+            if names:
+                request["extra_body"] = {
+                    "known_speaker_names": names,
+                    "known_speaker_references": references,
+                }
         else:
             request["prompt"] = prompt
 
