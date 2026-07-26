@@ -13,6 +13,7 @@ from .base import BaseWhisper, TranscribeOptions, WhisperResult, WhisperSegment
 KNOWN_SPEAKER_MIN_SECONDS = 2.0
 KNOWN_SPEAKER_MAX_SECONDS = 10.0
 KNOWN_SPEAKER_LIMIT = 4
+KNOWN_SPEAKER_MIN_SPEECH_SECONDS = 4.0
 
 
 class OpenAIApi(BaseWhisper):
@@ -75,6 +76,44 @@ class OpenAIApi(BaseWhisper):
             "segments": segments,
             "language": response_data.get("language") or language,
         }
+
+    @staticmethod
+    def apply_known_speaker_minimum(
+        result: WhisperResult,
+        known_names: list[str],
+        minimum_seconds: float = KNOWN_SPEAKER_MIN_SPEECH_SECONDS,
+    ) -> WhisperResult:
+        if not known_names:
+            return result
+
+        known_names_set = set(known_names)
+        speaker_order: list[str] = []
+        speech_seconds: dict[str, float] = {}
+
+        for segment in result["segments"]:
+            speaker = segment.get("speaker")
+            if not speaker:
+                continue
+            if speaker not in speech_seconds:
+                speaker_order.append(speaker)
+                speech_seconds[speaker] = 0.0
+            speech_seconds[speaker] += max(0.0, segment["end"] - segment["start"])
+
+        generic_labels = {
+            speaker: chr(ord("A") + index)
+            for index, speaker in enumerate(speaker_order)
+        }
+        for segment in result["segments"]:
+            speaker = segment.get("speaker")
+            if not speaker:
+                continue
+            if (
+                speaker not in known_names_set
+                or speech_seconds[speaker] < minimum_seconds
+            ):
+                segment["speaker"] = generic_labels[speaker]
+
+        return result
 
     @staticmethod
     def known_speakers() -> tuple[list[str], list[str]]:
@@ -170,6 +209,7 @@ class OpenAIApi(BaseWhisper):
             "response_format": self.response_format,
             "language": language,
         }
+        names: list[str] = []
         if self.is_diarization_model:
             request["chunking_strategy"] = "auto"
             names, references = self.known_speakers()
@@ -187,4 +227,5 @@ class OpenAIApi(BaseWhisper):
                 **request,
             )
 
-        return self.normalize_response(response, language)
+        result = self.normalize_response(response, language)
+        return self.apply_known_speaker_minimum(result, names)
